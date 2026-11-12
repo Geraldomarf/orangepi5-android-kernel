@@ -62,6 +62,7 @@ jobs:
           bindgen-0.71 --version
           echo "RUST_LIB_SRC=${SRC}"
           ls -d "${SRC}"
+          test -f "${SRC}/core/src/lib.rs"
 
       - name: Show toolchain
         run: |
@@ -86,10 +87,11 @@ jobs:
         run: |
           set -o pipefail
           cd "$GITHUB_WORKSPACE/src"
+          TOOLS='RUSTC=rustc-1.85 RUSTDOC=rustdoc-1.85 BINDGEN=bindgen-0.71'
           {
           cp "$GITHUB_WORKSPACE/config/kernel-7.4.config" .config
-          make LLVM=1 ARCH=arm64 rustavailable
-          make LLVM=1 ARCH=arm64 olddefconfig
+          make LLVM=1 ARCH=arm64 $TOOLS rustavailable
+          make LLVM=1 ARCH=arm64 $TOOLS olddefconfig
           # Force options that may have been renamed/dropped by olddefconfig.
           ./scripts/config --file .config \
             -e RUST \
@@ -107,7 +109,7 @@ jobs:
             -d GDB_SCRIPTS \
             --set-str EXTRA_FIRMWARE "" \
             --set-str EXTRA_FIRMWARE_DIR "firmware" || true
-          make LLVM=1 ARCH=arm64 olddefconfig
+          make LLVM=1 ARCH=arm64 $TOOLS olddefconfig
           echo "=== effective configuration ==="
           grep -E '^CONFIG_(LOCALVERSION|UDMABUF|DEVFREQ_GOV_PERFORMANCE|DEVFREQ_GOV_USERSPACE)=' .config || true
           grep -E '^CONFIG_RTW88[A-Z0-9_]*=' .config || true
@@ -127,7 +129,8 @@ jobs:
         run: |
           set -o pipefail
           cd "$GITHUB_WORKSPACE/src"
-          make LLVM=1 ARCH=arm64 -j"$(nproc)" Image 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          TOOLS='RUSTC=rustc-1.85 RUSTDOC=rustdoc-1.85 BINDGEN=bindgen-0.71'
+          make LLVM=1 ARCH=arm64 $TOOLS -j"$(nproc)" Image 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
 
       - name: Build DTB
         id: build_dtb
@@ -136,11 +139,12 @@ jobs:
         run: |
           set -o pipefail
           cd "$GITHUB_WORKSPACE/src"
-          make LLVM=1 ARCH=arm64 -j"$(nproc)" "rockchip/${DTB_NAME}" 2>&1 | tee -a "$GITHUB_WORKSPACE/build.log" \
-            || make LLVM=1 ARCH=arm64 -j"$(nproc)" dtbs 2>&1 | tee -a "$GITHUB_WORKSPACE/build.log"
+          TOOLS='RUSTC=rustc-1.85 RUSTDOC=rustdoc-1.85 BINDGEN=bindgen-0.71'
+          make LLVM=1 ARCH=arm64 $TOOLS -j"$(nproc)" "rockchip/${DTB_NAME}" 2>&1 | tee -a "$GITHUB_WORKSPACE/build.log" \
+            || make LLVM=1 ARCH=arm64 $TOOLS -j"$(nproc)" dtbs 2>&1 | tee -a "$GITHUB_WORKSPACE/build.log"
 
       - name: Report build failure
-        if: steps.configure.outcome == 'failure' || steps.build_image.outcome == 'failure' || steps.build_dtb.outcome == 'failure'
+        if: failure()
         run: |
           python3 - "$GITHUB_WORKSPACE" <<'PYEOF'
           import os
@@ -155,13 +159,14 @@ jobs:
           except OSError as exc:
               lines = ["<no build log: %s>" % exc]
           hits = [l for l in lines if re.search(r"error|Error \d|No rule|not found|cannot find|undefined|Rust support", l)]
-          if not hits:
-              hits = lines[-60:]
-          msg = "\n".join(hits[:60])
+          tail = lines[-60:]
+          msg = "\n".join(lines[-60:])
+          if hits:
+              msg = "\n".join(hits[:40]) + "\n--- tail ---\n" + "\n".join(lines[-25:])
           def esc(s):
               return s.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
-          print("--- last 60 log lines ---")
-          print("\n".join(lines[-60:]))
+          print("--- log: %s ---" % path)
+          print("\n".join(tail))
           print("::error title=kernel-build::" + esc(msg[:20000]))
           PYEOF
           exit 1
