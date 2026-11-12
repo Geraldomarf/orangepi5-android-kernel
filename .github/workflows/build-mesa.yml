@@ -92,12 +92,13 @@ jobs:
             -Dbuildtype=release \
             -Dstrip=true \
             -Dplatforms= \
-            -Dgallium-drivers= \
+            -Dgallium-drivers=panfrost \
             -Dvulkan-drivers= \
             -Dmesa-clc=enabled \
             -Dinstall-mesa-clc=true \
             -Dtools=panfrost \
-            -Dinstall-precomp-compiler=true 2>&1 | tee "$BUILD_LOG"
+            -Dinstall-precomp-compiler=true \
+            -Dallow-fallback-for=libdrm 2>&1 | tee "$BUILD_LOG"
           meson install -C build-compiler 2>&1 | tee -a "$BUILD_LOG"
           ls -l "$HOST_PREFIX/bin" || true
           echo "$HOST_PREFIX/bin" >> "$GITHUB_PATH"
@@ -174,14 +175,18 @@ jobs:
         if: failure()
         run: |
           python3 - "$BUILD_LOG" <<'PYEOF'
+          import re
           import sys
           try:
               lines = open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
           except OSError as exc:
               lines = ["<no build log: %s>" % exc]
-          tail = lines[-80:]
+          hits = [l for l in lines if re.search(
+              r"error:|fatal error|FAILED:|undefined reference|No such file|not found|ERROR:",
+              l, re.I)]
+          tail = hits[-20:] or lines[-40:]
           print("\n".join(tail))
-          msg = "\n".join(tail[-40:])
+          msg = "\n".join(tail[-20:])
           esc = msg.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
           print("::error title=mesa-build::" + esc[:20000])
           PYEOF
