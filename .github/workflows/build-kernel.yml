@@ -1,0 +1,152 @@
+name: build-kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      kver:
+        description: "Kernel version tag from git.kernel.org/torvalds/t (e.g. 7.4-rc2)"
+        required: true
+        default: "7.4-rc2"
+  push:
+    branches: [main]
+    paths:
+      - "config/**"
+      - ".github/workflows/build-kernel.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kernel-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  KVER_DEFAULT: "7.4-rc2"
+  DTB_NAME: "rk3588s-orangepi-5.dtb"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "KVER=${{ github.event.inputs.kver }}" >> "$GITHUB_ENV"
+          else
+            echo "KVER=${KVER_DEFAULT}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex libssl-dev libelf-dev libncurses-dev \
+            xz-utils zstd lld llvm clang cpio rsync curl ca-certificates
+
+      - name: Show toolchain
+        run: |
+          clang --version
+          ld.lld --version
+          make --version | head -1
+          echo "cpus: $(nproc)"
+
+      - name: Fetch mainline kernel tarball
+        run: |
+          curl -fL --retry 5 --retry-delay 5 -o "$RUNNER_TEMP/linux.tar.gz" \
+            "https://git.kernel.org/torvalds/t/linux-${KVER}.tar.gz"
+          ls -l "$RUNNER_TEMP/linux.tar.gz"
+          mkdir -p "$GITHUB_WORKSPACE/src"
+          tar -xzf "$RUNNER_TEMP/linux.tar.gz" -C "$GITHUB_WORKSPACE/src" --strip-components=1
+          rm -f "$RUNNER_TEMP/linux.tar.gz"
+          cd "$GITHUB_WORKSPACE/src"
+          head -5 Makefile
+
+      - name: Configure kernel
+        run: |
+          cd "$GITHUB_WORKSPACE/src"
+          cp "$GITHUB_WORKSPACE/config/kernel-7.4.config" .config
+          make LLVM=1 ARCH=arm64 olddefconfig
+          # Force options that may have been renamed/dropped by olddefconfig.
+          ./scripts/config --file .config \
+            -e UDMABUF \
+            -e DEVFREQ_GOV_PERFORMANCE \
+            -e DEVFREQ_GOV_USERSPACE \
+            -e RTW88 -e RTW88_CORE -e RTW88_USB -e RTW88_8821C -e RTW88_8821CU \
+            -d DEBUG_INFO -e DEBUG_INFO_NONE \
+            -d DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT \
+            -d DEBUG_INFO_COMPRESSED_NONE \
+            -d DEBUG_INFO_BTF -d DEBUG_INFO_BTF_MODULES \
+            -d DEBUG_INFO_REDUCED -d DEBUG_INFO_SPLIT \
+            -d GDB_SCRIPTS || true
+          make LLVM=1 ARCH=arm64 olddefconfig
+          echo "=== effective configuration ==="
+          grep -E '^CONFIG_(LOCALVERSION|UDMABUF|DEVFREQ_GOV_PERFORMANCE|DEVFREQ_GOV_USERSPACE)=' .config || true
+          grep -E '^CONFIG_RTW88[A-Z0-9_]*=' .config || true
+          grep -E '^CONFIG_(DRM_PANTHOR|DRM_PANFROST|BLK_DEV_NVME|NVME_CORE|SCHED_CLUSTER|SCHED_MC|ENERGY_MODEL|UCLAMP_TASK|LRU_GEN|LRU_GEN_ENABLED|PSI|ZRAM|ANDROID_BINDER_IPC|ANDROID_BINDERFS|ARM64_VA_BITS)=' .config || true
+          echo "=== debug info ==="
+          grep -E 'DEBUG_INFO' .config || true
+          test "$(grep -c '^CONFIG_DEBUG_INFO_BTF=y' .config)" = "0"
+          echo "=== kernel release ==="
+          make -s LLVM=1 ARCH=arm64 kernelrelease
+
+      - name: Build Image, DTB and System.map
+        run: |
+          cd "$GITHUB_WORKSPACE/src"
+          make LLVM=1 ARCH=arm64 -j"$(nproc)" Image System.map
+          if ! make LLVM=1 ARCH=arm64 -j"$(nproc)" "rockchip/${DTB_NAME}"; then
+            echo "::warning::single DTB target failed, building all arm64 DTBs"
+            make LLVM=1 ARCH=arm64 -j"$(nproc)" dtbs
+          fi
+
+      - name: Collect artifacts
+        run: |
+          cd "$GITHUB_WORKSPACE/src"
+          KREL="$(make -s LLVM=1 ARCH=arm64 kernelrelease)"
+          echo "KREL=${KREL}" >> "$GITHUB_ENV"
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          cp arch/arm64/boot/Image "$GITHUB_WORKSPACE/out/Image"
+          cp "arch/arm64/boot/dts/rockchip/${DTB_NAME}" "$GITHUB_WORKSPACE/out/${DTB_NAME}"
+          cp System.map "$GITHUB_WORKSPACE/out/System.map"
+          cp .config "$GITHUB_WORKSPACE/out/kernel-7.4.config"
+          printf '%s\n' "$KREL" > "$GITHUB_WORKSPACE/out/KERNEL_RELEASE.txt"
+          cd "$GITHUB_WORKSPACE/out"
+          sha256sum * > SHA256SUMS.txt
+          echo "=== artifacts ==="
+          ls -l
+          cat SHA256SUMS.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ env.KVER }}-${{ github.run_number }}
+          path: out/*
+          if-no-files-found: error
+          compression-level: 6
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: kernel-${{ env.KVER }}-${{ github.run_number }}
+          name: "Linux ${{ env.KVER }} for Orange Pi 5 (${{ env.KREL }})"
+          body: |
+            Mainline Linux `${{ env.KVER }}` built with LLVM/Clang for the
+            Orange Pi 5 (RK3588S), 4K pages, 48-bit VA.
+
+            Contents:
+            - `Image` - arm64 kernel image (drop into the FAT boot partition)
+            - `${{ env.DTB_NAME }}` - device tree blob for the Orange Pi 5 (non-Pro)
+            - `kernel-7.4.config` - effective kernel configuration
+            - `System.map`
+            - `KERNEL_RELEASE.txt`
+            - `SHA256SUMS.txt`
+
+            Build ${{ github.run_number }} from `${{ github.sha }}`.
+          files: out/*
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
