@@ -94,6 +94,11 @@ jobs:
             -Dplatforms= \
             -Dgallium-drivers=panfrost \
             -Dvulkan-drivers= \
+            -Dopengl=false \
+            -Dgles1=disabled \
+            -Dgles2=disabled \
+            -Dglx=disabled \
+            -Degl=disabled \
             -Dmesa-clc=enabled \
             -Dinstall-mesa-clc=true \
             -Dtools=panfrost \
