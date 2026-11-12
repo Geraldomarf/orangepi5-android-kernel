@@ -112,11 +112,9 @@ jobs:
         run: |
           cat > "$GITHUB_WORKSPACE/android-aarch64.txt" <<EOF
           [binaries]
-          ar = '$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android-ar'
+          ar = '$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar'
           c = '$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${NDK_API}-clang'
           cpp = ['$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${NDK_API}-clang++', '-fno-exceptions', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables', '-static-libstdc++']
-          c_ld = 'lld'
-          cpp_ld = 'lld'
           strip = '$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip'
 
           [host_machine]
