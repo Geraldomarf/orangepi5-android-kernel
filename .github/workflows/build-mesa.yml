@@ -47,6 +47,13 @@ jobs:
             llvm-18-dev libclang-cpp18-dev libclang-18-dev libclang-common-18-dev \
             libllvmspirvlib-18-dev spirv-tools clang-18
 
+      - name: Install Meson (>= 1.4)
+        run: |
+          python3 -m venv "$HOME/meson-venv"
+          "$HOME/meson-venv/bin/pip" install --upgrade pip
+          "$HOME/meson-venv/bin/pip" install "meson>=1.4,<2"
+          echo "$HOME/meson-venv/bin" >> "$GITHUB_PATH"
+
       - name: Show toolchain
         run: |
           meson --version
