@@ -26,6 +26,7 @@ env:
   NDK_API: "34"
   NDK_DIR: /opt/android-ndk
   HOST_PREFIX: /opt/mesa-host
+  BUILD_LOG: ${{ github.workspace }}/mesa-build.log
 
 jobs:
   build:
@@ -41,17 +42,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             meson ninja-build pkg-config lld patchelf xz-utils unzip \
-            python3-mako python3-yaml python3-packaging \
-            bison flex cmake curl ca-certificates
+            python3-mako python3-yaml python3-packaging python3-setuptools \
+            bison flex cmake curl ca-certificates \
+            llvm-18-dev libclang-cpp18-dev libclang-18-dev libclang-common-18-dev \
+            libllvmspirvlib-18-dev spirv-tools clang-18
 
       - name: Show toolchain
         run: |
           meson --version
           ninja --version
           patchelf --version
+          /usr/lib/llvm-18/bin/llvm-config --version
+          pkg-config --modversion SPIRV-Tools
 
       - name: Fetch Mesa source
         run: |
+          set -o pipefail
           curl -fL --retry 5 --retry-delay 5 -o "$RUNNER_TEMP/mesa.tar.xz" \
             "https://archive.mesa3d.org/mesa-${MESA_VERSION}.tar.xz"
           tar -xJf "$RUNNER_TEMP/mesa.tar.xz" -C "$GITHUB_WORKSPACE"
@@ -61,6 +67,7 @@ jobs:
 
       - name: Fetch Android NDK
         run: |
+          set -o pipefail
           curl -fL --retry 5 --retry-delay 5 -o "$RUNNER_TEMP/ndk.zip" \
             "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
           sudo unzip -q "$RUNNER_TEMP/ndk.zip" -d /opt
@@ -70,6 +77,8 @@ jobs:
 
       - name: Build host shader compilers
         run: |
+          set -o pipefail
+          export PATH="/usr/lib/llvm-18/bin:$PATH"
           cd "$GITHUB_WORKSPACE/mesa"
           meson setup build-compiler \
             -Dprefix="$HOST_PREFIX" \
@@ -81,8 +90,8 @@ jobs:
             -Dmesa-clc=enabled \
             -Dinstall-mesa-clc=true \
             -Dtools=panfrost \
-            -Dinstall-precomp-compiler=true
-          meson install -C build-compiler
+            -Dinstall-precomp-compiler=true 2>&1 | tee "$BUILD_LOG"
+          meson install -C build-compiler 2>&1 | tee -a "$BUILD_LOG"
           ls -l "$HOST_PREFIX/bin" || true
           echo "$HOST_PREFIX/bin" >> "$GITHUB_PATH"
 
@@ -92,7 +101,7 @@ jobs:
           [binaries]
           ar = '$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android-ar'
           c = '$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${NDK_API}-clang'
-          cpp = ['$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${NDK_API}-clang++', '-fno-exceptions', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables']
+          cpp = ['$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${NDK_API}-clang++', '-fno-exceptions', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables', '-static-libstdc++']
           c_ld = 'lld'
           cpp_ld = 'lld'
           strip = '$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip'
@@ -107,8 +116,9 @@ jobs:
 
       - name: Configure Android build
         run: |
+          set -o pipefail
           cd "$GITHUB_WORKSPACE/mesa"
-          export PATH="$HOST_PREFIX/bin:$PATH"
+          export PATH="$HOST_PREFIX/bin:/usr/lib/llvm-18/bin:$PATH"
           meson setup build-android \
             --cross-file "$GITHUB_WORKSPACE/android-aarch64.txt" \
             -Dplatforms=android \
@@ -123,20 +133,23 @@ jobs:
             -Dprecomp-compiler=system \
             -Dbuildtype=release \
             -Dstrip=true \
-            -Db_ndebug=true
+            -Db_ndebug=true 2>&1 | tee -a "$BUILD_LOG"
           meson configure build-android | grep -E "vulkan|platform|gallium|android" || true
 
       - name: Compile
         run: |
+          set -o pipefail
           cd "$GITHUB_WORKSPACE/mesa"
-          export PATH="$HOST_PREFIX/bin:$PATH"
-          ninja -C build-android -j"$(nproc)" 2>&1 | tail -80
+          export PATH="$HOST_PREFIX/bin:/usr/lib/llvm-18/bin:$PATH"
+          ninja -C build-android -j"$(nproc)" 2>&1 | tee -a "$BUILD_LOG" | tail -40
 
       - name: Collect and patch driver
         run: |
+          set -o pipefail
           cd "$GITHUB_WORKSPACE/mesa"
           mkdir -p "$GITHUB_WORKSPACE/out"
           SRC="$(find build-android -name 'libvulkan_panfrost.so' -type f | head -1)"
+          test -n "$SRC"
           echo "found: $SRC"
           cp "$SRC" "$GITHUB_WORKSPACE/out/vulkan.panfrost.so"
           patchelf --set-soname vulkan.panfrost.so "$GITHUB_WORKSPACE/out/vulkan.panfrost.so"
@@ -145,10 +158,27 @@ jobs:
           ls -l vulkan.panfrost.so
           (readelf -d vulkan.panfrost.so | grep -E 'NEEDED|SONAME' || true) | tee dynamic.txt
           (readelf -h vulkan.panfrost.so | grep -E 'Class|Machine|Type' || true) | tee -a dynamic.txt
-          readelf -sW vulkan.panfrost.so | grep -E 'HAL_MODULE_INFO_SYM|HWVULKAN' | head -20 | tee symbols.txt || true
+          (readelf -sW vulkan.panfrost.so | grep -E 'HAL_MODULE_INFO_SYM|HWVULKAN' | head -20 || true) | tee symbols.txt
           printf 'mesa %s\n' "$MESA_VERSION" > MESA_VERSION.txt
           sha256sum vulkan.panfrost.so > vulkan.panfrost.so.sha256
           cat dynamic.txt symbols.txt MESA_VERSION.txt
+
+      - name: Report Mesa failure
+        if: failure()
+        run: |
+          python3 - "$BUILD_LOG" <<'PYEOF'
+          import sys
+          try:
+              lines = open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
+          except OSError as exc:
+              lines = ["<no build log: %s>" % exc]
+          tail = lines[-80:]
+          print("\n".join(tail))
+          msg = "\n".join(tail[-40:])
+          esc = msg.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+          print("::error title=mesa-build::" + esc[:20000])
+          PYEOF
+          exit 1
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -164,7 +194,7 @@ jobs:
           name: "Mesa ${{ env.MESA_VERSION }} PanVK for RK3588S (Orange Pi 5)"
           body: |
             Mesa `${{ env.MESA_VERSION }}` PanVK (Vulkan) built out-of-tree with the
-            Android NDK `${{ env.NDK_VERSION }}` (API `${{ env.NDK_API }}`), LLVM, Vulkan-only,
+            Android NDK `${{ env.NDK_VERSION }}` (API `${{ env.NDK_API }}`), Vulkan-only,
             EGL/GLES disabled, libdrm built from the Meson wrap.
 
             Drop-in for the vendor partition: `vulkan.panfrost.so` goes to
