@@ -48,6 +48,21 @@ jobs:
             bc bison flex libssl-dev libelf-dev libncurses-dev \
             xz-utils zstd lld llvm clang cpio rsync curl ca-certificates
 
+      - name: Install Rust toolchain (binder is Rust-only in 7.4)
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            rustc-1.85 rust-1.85-src bindgen-0.71 libclang-18-dev
+          echo "RUSTC=rustc-1.85" >> "$GITHUB_ENV"
+          echo "RUSTDOC=rustdoc-1.85" >> "$GITHUB_ENV"
+          echo "BINDGEN=bindgen-0.71" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=/usr/lib/llvm-18/lib" >> "$GITHUB_ENV"
+          SRC="$(ls -d /usr/src/rustc-1.85*/library 2>/dev/null | head -1)"
+          echo "RUST_LIB_SRC=${SRC}" >> "$GITHUB_ENV"
+          rustc-1.85 --version
+          bindgen-0.71 --version
+          echo "RUST_LIB_SRC=${SRC}"
+          ls -d "${SRC}"
+
       - name: Show toolchain
         run: |
           clang --version
@@ -67,12 +82,19 @@ jobs:
           head -5 Makefile
 
       - name: Configure kernel
+        id: configure
         run: |
+          set -o pipefail
           cd "$GITHUB_WORKSPACE/src"
+          {
           cp "$GITHUB_WORKSPACE/config/kernel-7.4.config" .config
+          make LLVM=1 ARCH=arm64 rustavailable
           make LLVM=1 ARCH=arm64 olddefconfig
           # Force options that may have been renamed/dropped by olddefconfig.
           ./scripts/config --file .config \
+            -e RUST \
+            -e ANDROID_BINDER_IPC_RUST \
+            --set-str ANDROID_BINDER_DEVICES "binder,hwbinder,vndbinder" \
             -e UDMABUF \
             -e DEVFREQ_GOV_PERFORMANCE \
             -e DEVFREQ_GOV_USERSPACE \
@@ -89,12 +111,15 @@ jobs:
           echo "=== effective configuration ==="
           grep -E '^CONFIG_(LOCALVERSION|UDMABUF|DEVFREQ_GOV_PERFORMANCE|DEVFREQ_GOV_USERSPACE)=' .config || true
           grep -E '^CONFIG_RTW88[A-Z0-9_]*=' .config || true
-          grep -E '^CONFIG_(DRM_PANTHOR|DRM_PANFROST|BLK_DEV_NVME|NVME_CORE|SCHED_CLUSTER|SCHED_MC|ENERGY_MODEL|UCLAMP_TASK|LRU_GEN|LRU_GEN_ENABLED|PSI|ZRAM|ANDROID_BINDER_IPC|ANDROID_BINDERFS|ARM64_VA_BITS)=' .config || true
+          grep -E '^CONFIG_(RUST|ANDROID_BINDER_IPC_RUST|ANDROID_BINDER_DEVICES|DRM_PANTHOR|DRM_PANFROST|BLK_DEV_NVME|NVME_CORE|SCHED_CLUSTER|SCHED_MC|ENERGY_MODEL|UCLAMP_TASK|LRU_GEN|LRU_GEN_ENABLED|PSI|ZRAM|ARM64_VA_BITS)=' .config || true
+          test "$(grep -c '^CONFIG_RUST=y' .config)" = "1"
+          test "$(grep -c '^CONFIG_ANDROID_BINDER_IPC_RUST=y' .config)" = "1"
           echo "=== debug info ==="
           grep -E 'DEBUG_INFO' .config || true
           test "$(grep -c '^CONFIG_DEBUG_INFO_BTF=y' .config)" = "0"
           echo "=== kernel release ==="
           make -s LLVM=1 ARCH=arm64 kernelrelease
+          } 2>&1 | tee "$GITHUB_WORKSPACE/config.log"
 
       - name: Build Image
         id: build_image
@@ -115,15 +140,21 @@ jobs:
             || make LLVM=1 ARCH=arm64 -j"$(nproc)" dtbs 2>&1 | tee -a "$GITHUB_WORKSPACE/build.log"
 
       - name: Report build failure
-        if: steps.build_image.outcome == 'failure' || steps.build_dtb.outcome == 'failure'
+        if: steps.configure.outcome == 'failure' || steps.build_image.outcome == 'failure' || steps.build_dtb.outcome == 'failure'
         run: |
-          python3 - "$GITHUB_WORKSPACE/build.log" <<'PYEOF'
-          import re, sys
+          python3 - "$GITHUB_WORKSPACE" <<'PYEOF'
+          import os
+          import re
+          import sys
+          ws = sys.argv[1]
+          cands = [os.path.join(ws, n) for n in ("build.log", "config.log")]
+          cands = [p for p in cands if os.path.exists(p) and os.path.getsize(p) > 0]
+          path = max(cands, key=os.path.getmtime) if cands else os.path.join(ws, "build.log")
           try:
-              lines = open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
+              lines = open(path, encoding="utf-8", errors="replace").read().splitlines()
           except OSError as exc:
               lines = ["<no build log: %s>" % exc]
-          hits = [l for l in lines if re.search(r"error|Error \d|No rule|not found|cannot find|undefined", l)]
+          hits = [l for l in lines if re.search(r"error|Error \d|No rule|not found|cannot find|undefined|Rust support", l)]
           if not hits:
               hits = lines[-60:]
           msg = "\n".join(hits[:60])
