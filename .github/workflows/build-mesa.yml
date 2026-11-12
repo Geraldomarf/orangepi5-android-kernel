@@ -167,9 +167,11 @@ jobs:
           cd "$GITHUB_WORKSPACE/out"
           file vulkan.panfrost.so
           ls -l vulkan.panfrost.so
-          (readelf -d vulkan.panfrost.so | grep -E 'NEEDED|SONAME' || true) | tee dynamic.txt
-          (readelf -h vulkan.panfrost.so | grep -E 'Class|Machine|Type' || true) | tee -a dynamic.txt
-          (readelf -sW vulkan.panfrost.so | grep -E 'HAL_MODULE_INFO_SYM|HWVULKAN' | head -20 || true) | tee symbols.txt
+          { readelf -d vulkan.panfrost.so | grep -E 'NEEDED|SONAME' || true; } > dynamic.txt
+          { readelf -h vulkan.panfrost.so | grep -E 'Class|Machine|Type' || true; } >> dynamic.txt
+          { readelf -sW vulkan.panfrost.so | grep -E 'HAL_MODULE_INFO_SYM|HWVULKAN|hal_module_info' | head -20 || true; } > symbols.txt
+          test -s dynamic.txt || echo "readelf dynamic section unavailable" > dynamic.txt
+          test -s symbols.txt || echo "no HAL symbols matched after strip" > symbols.txt
           printf 'mesa %s\n' "$MESA_VERSION" > MESA_VERSION.txt
           sha256sum vulkan.panfrost.so > vulkan.panfrost.so.sha256
           cat dynamic.txt symbols.txt MESA_VERSION.txt
