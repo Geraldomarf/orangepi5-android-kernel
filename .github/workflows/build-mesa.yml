@@ -1,0 +1,176 @@
+name: build-mesa-panvk
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Mesa release (e.g. 26.2.7)"
+        required: true
+        default: "26.2.7"
+  push:
+    branches: [main]
+    paths:
+      - "mesa/**"
+      - ".github/workflows/build-mesa.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mesa-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  MESA_VERSION: ${{ github.event.inputs.version || '26.2.7' }}
+  NDK_VERSION: r28c
+  NDK_API: "34"
+  NDK_DIR: /opt/android-ndk
+  HOST_PREFIX: /opt/mesa-host
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            meson ninja-build pkg-config lld patchelf xz-utils unzip \
+            python3-mako python3-yaml python3-packaging \
+            bison flex cmake curl ca-certificates
+
+      - name: Show toolchain
+        run: |
+          meson --version
+          ninja --version
+          patchelf --version
+
+      - name: Fetch Mesa source
+        run: |
+          curl -fL --retry 5 --retry-delay 5 -o "$RUNNER_TEMP/mesa.tar.xz" \
+            "https://archive.mesa3d.org/mesa-${MESA_VERSION}.tar.xz"
+          tar -xJf "$RUNNER_TEMP/mesa.tar.xz" -C "$GITHUB_WORKSPACE"
+          mv "$GITHUB_WORKSPACE/mesa-${MESA_VERSION}" "$GITHUB_WORKSPACE/mesa"
+          rm -f "$RUNNER_TEMP/mesa.tar.xz"
+          head -20 "$GITHUB_WORKSPACE/mesa/meson.build"
+
+      - name: Fetch Android NDK
+        run: |
+          curl -fL --retry 5 --retry-delay 5 -o "$RUNNER_TEMP/ndk.zip" \
+            "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
+          sudo unzip -q "$RUNNER_TEMP/ndk.zip" -d /opt
+          sudo mv "/opt/android-ndk-${NDK_VERSION}" "$NDK_DIR"
+          rm -f "$RUNNER_TEMP/ndk.zip"
+          ls "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/" | grep "aarch64-linux-android${NDK_API}-clang$"
+
+      - name: Build host shader compilers
+        run: |
+          cd "$GITHUB_WORKSPACE/mesa"
+          meson setup build-compiler \
+            -Dprefix="$HOST_PREFIX" \
+            -Dbuildtype=release \
+            -Dstrip=true \
+            -Dplatforms= \
+            -Dgallium-drivers= \
+            -Dvulkan-drivers= \
+            -Dmesa-clc=enabled \
+            -Dinstall-mesa-clc=true \
+            -Dtools=panfrost \
+            -Dinstall-precomp-compiler=true
+          meson install -C build-compiler
+          ls -l "$HOST_PREFIX/bin" || true
+          echo "$HOST_PREFIX/bin" >> "$GITHUB_PATH"
+
+      - name: Write meson cross file
+        run: |
+          cat > "$GITHUB_WORKSPACE/android-aarch64.txt" <<EOF
+          [binaries]
+          ar = '$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android-ar'
+          c = '$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${NDK_API}-clang'
+          cpp = ['$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${NDK_API}-clang++', '-fno-exceptions', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables']
+          c_ld = 'lld'
+          cpp_ld = 'lld'
+          strip = '$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip'
+
+          [host_machine]
+          system = 'android'
+          cpu_family = 'aarch64'
+          cpu = 'armv8'
+          endian = 'little'
+          EOF
+          cat "$GITHUB_WORKSPACE/android-aarch64.txt"
+
+      - name: Configure Android build
+        run: |
+          cd "$GITHUB_WORKSPACE/mesa"
+          export PATH="$HOST_PREFIX/bin:$PATH"
+          meson setup build-android \
+            --cross-file "$GITHUB_WORKSPACE/android-aarch64.txt" \
+            -Dplatforms=android \
+            -Dplatform-sdk-version="$NDK_API" \
+            -Dandroid-stub=true \
+            -Dandroid-libbacktrace=disabled \
+            -Degl=disabled \
+            -Dgallium-drivers= \
+            -Dvulkan-drivers=panfrost \
+            -Dallow-fallback-for=libdrm \
+            -Dmesa-clc=system \
+            -Dprecomp-compiler=system \
+            -Dbuildtype=release \
+            -Dstrip=true \
+            -Db_ndebug=true
+          meson configure build-android | grep -E "vulkan|platform|gallium|android" || true
+
+      - name: Compile
+        run: |
+          cd "$GITHUB_WORKSPACE/mesa"
+          export PATH="$HOST_PREFIX/bin:$PATH"
+          ninja -C build-android -j"$(nproc)" 2>&1 | tail -80
+
+      - name: Collect and patch driver
+        run: |
+          cd "$GITHUB_WORKSPACE/mesa"
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          SRC="$(find build-android -name 'libvulkan_panfrost.so' -type f | head -1)"
+          echo "found: $SRC"
+          cp "$SRC" "$GITHUB_WORKSPACE/out/vulkan.panfrost.so"
+          patchelf --set-soname vulkan.panfrost.so "$GITHUB_WORKSPACE/out/vulkan.panfrost.so"
+          cd "$GITHUB_WORKSPACE/out"
+          file vulkan.panfrost.so
+          ls -l vulkan.panfrost.so
+          (readelf -d vulkan.panfrost.so | grep -E 'NEEDED|SONAME' || true) | tee dynamic.txt
+          (readelf -h vulkan.panfrost.so | grep -E 'Class|Machine|Type' || true) | tee -a dynamic.txt
+          readelf -sW vulkan.panfrost.so | grep -E 'HAL_MODULE_INFO_SYM|HWVULKAN' | head -20 | tee symbols.txt || true
+          printf 'mesa %s\n' "$MESA_VERSION" > MESA_VERSION.txt
+          sha256sum vulkan.panfrost.so > vulkan.panfrost.so.sha256
+          cat dynamic.txt symbols.txt MESA_VERSION.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mesa-${{ env.MESA_VERSION }}-panvk
+          path: out/*
+          if-no-files-found: error
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: mesa-${{ env.MESA_VERSION }}-panvk-${{ github.run_number }}
+          name: "Mesa ${{ env.MESA_VERSION }} PanVK for RK3588S (Orange Pi 5)"
+          body: |
+            Mesa `${{ env.MESA_VERSION }}` PanVK (Vulkan) built out-of-tree with the
+            Android NDK `${{ env.NDK_VERSION }}` (API `${{ env.NDK_API }}`), LLVM, Vulkan-only,
+            EGL/GLES disabled, libdrm built from the Meson wrap.
+
+            Drop-in for the vendor partition: `vulkan.panfrost.so` goes to
+            `/vendor/lib64/hw/` and is loaded as the built-in Vulkan HAL when
+            `ro.hardware.vulkan=panfrost` and `ro.vulkan.apex` is unset.
+          files: out/*
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
