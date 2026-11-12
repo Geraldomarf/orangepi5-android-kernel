@@ -31,7 +31,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Resolve version
         run: |
@@ -94,14 +94,44 @@ jobs:
           echo "=== kernel release ==="
           make -s LLVM=1 ARCH=arm64 kernelrelease
 
-      - name: Build Image, DTB and System.map
+      - name: Build Image
+        id: build_image
+        continue-on-error: true
         run: |
+          set -o pipefail
           cd "$GITHUB_WORKSPACE/src"
-          make LLVM=1 ARCH=arm64 -j"$(nproc)" Image System.map
-          if ! make LLVM=1 ARCH=arm64 -j"$(nproc)" "rockchip/${DTB_NAME}"; then
-            echo "::warning::single DTB target failed, building all arm64 DTBs"
-            make LLVM=1 ARCH=arm64 -j"$(nproc)" dtbs
-          fi
+          make LLVM=1 ARCH=arm64 -j"$(nproc)" Image 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+
+      - name: Build DTB
+        id: build_dtb
+        if: steps.build_image.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          cd "$GITHUB_WORKSPACE/src"
+          make LLVM=1 ARCH=arm64 -j"$(nproc)" "rockchip/${DTB_NAME}" 2>&1 | tee -a "$GITHUB_WORKSPACE/build.log" \
+            || make LLVM=1 ARCH=arm64 -j"$(nproc)" dtbs 2>&1 | tee -a "$GITHUB_WORKSPACE/build.log"
+
+      - name: Report build failure
+        if: steps.build_image.outcome != 'success' || steps.build_dtb.outcome != 'success'
+        run: |
+          python3 - "$GITHUB_WORKSPACE/build.log" <<'PYEOF'
+          import re, sys
+          try:
+              lines = open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
+          except OSError as exc:
+              lines = ["<no build log: %s>" % exc]
+          hits = [l for l in lines if re.search(r"error|Error \d|No rule|not found|cannot find|undefined", l)]
+          if not hits:
+              hits = lines[-60:]
+          msg = "\n".join(hits[:60])
+          def esc(s):
+              return s.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+          print("--- last 60 log lines ---")
+          print("\n".join(lines[-60:]))
+          print("::error title=kernel-build::" + esc(msg[:20000]))
+          PYEOF
+          exit 1
 
       - name: Collect artifacts
         run: |
