@@ -51,7 +51,7 @@ jobs:
         run: |
           python3 -m venv "$HOME/meson-venv"
           "$HOME/meson-venv/bin/pip" install --upgrade pip
-          "$HOME/meson-venv/bin/pip" install "meson>=1.4,<2"
+          "$HOME/meson-venv/bin/pip" install "meson>=1.4,<2" mako packaging
           echo "$HOME/meson-venv/bin" >> "$GITHUB_PATH"
 
       - name: Show toolchain
