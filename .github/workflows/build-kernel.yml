@@ -82,7 +82,9 @@ jobs:
             -d DEBUG_INFO_COMPRESSED_NONE \
             -d DEBUG_INFO_BTF -d DEBUG_INFO_BTF_MODULES \
             -d DEBUG_INFO_REDUCED -d DEBUG_INFO_SPLIT \
-            -d GDB_SCRIPTS || true
+            -d GDB_SCRIPTS \
+            --set-str EXTRA_FIRMWARE "" \
+            --set-str EXTRA_FIRMWARE_DIR "firmware" || true
           make LLVM=1 ARCH=arm64 olddefconfig
           echo "=== effective configuration ==="
           grep -E '^CONFIG_(LOCALVERSION|UDMABUF|DEVFREQ_GOV_PERFORMANCE|DEVFREQ_GOV_USERSPACE)=' .config || true
@@ -113,7 +115,7 @@ jobs:
             || make LLVM=1 ARCH=arm64 -j"$(nproc)" dtbs 2>&1 | tee -a "$GITHUB_WORKSPACE/build.log"
 
       - name: Report build failure
-        if: steps.build_image.outcome != 'success' || steps.build_dtb.outcome != 'success'
+        if: steps.build_image.outcome == 'failure' || steps.build_dtb.outcome == 'failure'
         run: |
           python3 - "$GITHUB_WORKSPACE/build.log" <<'PYEOF'
           import re, sys
