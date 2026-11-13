@@ -1,0 +1,50 @@
+diff --git a/arch/arm64/boot/dts/rockchip/rk3588-base.dtsi b/arch/arm64/boot/dts/rockchip/rk3588-base.dtsi
+--- a/arch/arm64/boot/dts/rockchip/rk3588-base.dtsi
++++ b/arch/arm64/boot/dts/rockchip/rk3588-base.dtsi
+@@ -450,11 +450,11 @@
+ 		compatible = "rockchip,rk3588-mali", "arm,mali-valhall-csf";
+ 		reg = <0x0 0xfb000000 0x0 0x200000>;
+ 		#cooling-cells = <2>;
+-		assigned-clocks = <&scmi_clk SCMI_CLK_GPU>;
+-		assigned-clock-rates = <200000000>;
+-		clocks = <&cru CLK_GPU>, <&cru CLK_GPU_COREGROUP>,
+-			 <&cru CLK_GPU_STACKS>;
+-		clock-names = "core", "coregroup", "stacks";
++		assigned-clocks = <&cru CLK_GPU>, <&scmi_clk SCMI_CLK_GPU>;
++		assigned-clock-rates = <198000000>, <200000000>;
++		clocks = <&scmi_clk SCMI_CLK_GPU>, <&cru CLK_GPU_COREGROUP>,
++			 <&cru CLK_GPU_STACKS>, <&cru CLK_GPU>;
++		clock-names = "core", "coregroup", "stacks", "bus";
+ 		dynamic-power-coefficient = <2982>;
+ 		interrupts = <GIC_SPI 92 IRQ_TYPE_LEVEL_HIGH 0>,
+ 			     <GIC_SPI 93 IRQ_TYPE_LEVEL_HIGH 0>,
+diff --git a/arch/arm64/boot/dts/rockchip/rk3588-opp.dtsi b/arch/arm64/boot/dts/rockchip/rk3588-opp.dtsi
+--- a/arch/arm64/boot/dts/rockchip/rk3588-opp.dtsi
++++ b/arch/arm64/boot/dts/rockchip/rk3588-opp.dtsi
+@@ -118,6 +118,11 @@
+ 	gpu_opp_table: opp-table-gpu {
+ 		compatible = "operating-points-v2";
+ 
++		opp-200000000 {
++			opp-hz = /bits/ 64 <200000000>;
++			opp-microvolt = <675000 675000 850000>;
++			opp-suspend;
++		};
+ 		opp-300000000 {
+ 			opp-hz = /bits/ 64 <300000000>;
+ 			opp-microvolt = <675000 675000 850000>;
+diff --git a/arch/arm64/boot/dts/rockchip/rk3588j.dtsi b/arch/arm64/boot/dts/rockchip/rk3588j.dtsi
+--- a/arch/arm64/boot/dts/rockchip/rk3588j.dtsi
++++ b/arch/arm64/boot/dts/rockchip/rk3588j.dtsi
+@@ -69,6 +69,11 @@
+ 	gpu_opp_table: opp-table-gpu {
+ 		compatible = "operating-points-v2";
+ 
++		opp-200000000 {
++			opp-hz = /bits/ 64 <200000000>;
++			opp-microvolt = <750000 750000 850000>;
++			opp-suspend;
++		};
+ 		opp-300000000 {
+ 			opp-hz = /bits/ 64 <300000000>;
+ 			opp-microvolt = <750000 750000 850000>;
