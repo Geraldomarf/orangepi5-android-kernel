@@ -1,0 +1,20 @@
+diff --git a/Documentation/devicetree/bindings/gpu/arm,mali-valhall-csf.yaml b/Documentation/devicetree/bindings/gpu/arm,mali-valhall-csf.yaml
+--- a/Documentation/devicetree/bindings/gpu/arm,mali-valhall-csf.yaml
++++ b/Documentation/devicetree/bindings/gpu/arm,mali-valhall-csf.yaml
+@@ -40,7 +40,7 @@
+ 
+   clocks:
+     minItems: 1
+-    maxItems: 3
++    maxItems: 4
+ 
+   clock-names:
+     minItems: 1
+@@ -50,6 +50,7 @@
+           - coregroup
+           - stacks
+       - const: stacks
++      - const: bus
+ 
+   nvmem-cells:
+     items:
