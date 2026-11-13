@@ -50,7 +50,7 @@ diff --git a/drivers/gpu/drm/panthor/panthor_device.c b/drivers/gpu/drm/panthor/
 diff --git a/drivers/gpu/drm/panthor/panthor_device.h b/drivers/gpu/drm/panthor/panthor_device.h
 --- a/drivers/gpu/drm/panthor/panthor_device.h
 +++ b/drivers/gpu/drm/panthor/panthor_device.h
-@@ -146,6 +146,9 @@
+@@ -146,5 +146,8 @@
  
  	/** @clks: GPU clocks. */
  	struct {
@@ -59,4 +59,3 @@ diff --git a/drivers/gpu/drm/panthor/panthor_device.h b/drivers/gpu/drm/panthor/
 +
  		/** @core: Core clock. */
  		struct clk *core;
- 
