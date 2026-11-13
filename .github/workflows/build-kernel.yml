@@ -82,6 +82,24 @@ jobs:
           cd "$GITHUB_WORKSPACE/src"
           head -5 Makefile
 
+          # --- Phase 0/1: Mali CSF firmware + NPLL 4 GHz -------------------
+          # Panthor requests arm/mali/arch10.8/mali_csffw.bin at probe time and
+          # CONFIG_FW_LOADER_USER_HELPER is off, so embed the blob in the Image.
+          mkdir -p firmware/arm/mali/arch10.8
+          curl -fL --retry 5 --retry-delay 5 \
+            -o firmware/arm/mali/arch10.8/mali_csffw.bin \
+            "https://raw.githubusercontent.com/armbian/firmware/master/arm/mali/arch10.8/mali_csffw.bin"
+          echo "a27847ea11f8efb3136340c3ba8aab413ae25145eeb4a7f64ff5edd829a2405b  firmware/arm/mali/arch10.8/mali_csffw.bin" | sha256sum -c -
+
+          # The GPU mux already selects NPLL; at 850 MHz it can never reach the
+          # 1 GHz OPP. 4 GHz gives 1 GHz (div 4) and 800 MHz (div 5).
+          # In 7.4 the clock node lives in rk3588-base.dtsi (rk3588s.dtsi only
+          # includes it).
+          sed -i 's/<850000000>, <1188000000>,/<4000000000>, <1188000000>,/' \
+            arch/arm64/boot/dts/rockchip/rk3588-base.dtsi
+          grep -q '<4000000000>, <1188000000>,' arch/arm64/boot/dts/rockchip/rk3588-base.dtsi
+          sed -n '755,758p' arch/arm64/boot/dts/rockchip/rk3588-base.dtsi
+
       - name: Configure kernel
         id: configure
         run: |
@@ -107,8 +125,9 @@ jobs:
             -d DEBUG_INFO_BTF -d DEBUG_INFO_BTF_MODULES \
             -d DEBUG_INFO_REDUCED -d DEBUG_INFO_SPLIT \
             -d GDB_SCRIPTS \
-            --set-str EXTRA_FIRMWARE "" \
-            --set-str EXTRA_FIRMWARE_DIR "firmware" || true
+            --set-str EXTRA_FIRMWARE "arm/mali/arch10.8/mali_csffw.bin" \
+            --set-str EXTRA_FIRMWARE_DIR "firmware" \
+            -e NTSYNC || true
           make LLVM=1 ARCH=arm64 $TOOLS olddefconfig
           echo "=== effective configuration ==="
           grep -E '^CONFIG_(LOCALVERSION|UDMABUF|DEVFREQ_GOV_PERFORMANCE|DEVFREQ_GOV_USERSPACE)=' .config || true
@@ -116,6 +135,9 @@ jobs:
           grep -E '^CONFIG_(RUST|ANDROID_BINDER_IPC_RUST|ANDROID_BINDER_DEVICES|DRM_PANTHOR|DRM_PANFROST|BLK_DEV_NVME|NVME_CORE|SCHED_CLUSTER|SCHED_MC|ENERGY_MODEL|UCLAMP_TASK|LRU_GEN|LRU_GEN_ENABLED|PSI|ZRAM|ARM64_VA_BITS)=' .config || true
           test "$(grep -c '^CONFIG_RUST=y' .config)" = "1"
           test "$(grep -c '^CONFIG_ANDROID_BINDER_IPC_RUST=y' .config)" = "1"
+          grep -E '^CONFIG_(NTSYNC|EXTRA_FIRMWARE|FW_LOADER)=' .config || true
+          test "$(grep -c '^CONFIG_NTSYNC=y' .config)" = "1"
+          test "$(grep -c '^CONFIG_EXTRA_FIRMWARE="arm/mali/arch10.8/mali_csffw.bin"' .config)" = "1"
           echo "=== debug info ==="
           grep -E 'DEBUG_INFO' .config || true
           test "$(grep -c '^CONFIG_DEBUG_INFO_BTF=y' .config)" = "0"
@@ -204,6 +226,9 @@ jobs:
           body: |
             Mainline Linux `${{ env.KVER }}` built with LLVM/Clang for the
             Orange Pi 5 (RK3588S), 4K pages, 48-bit VA.
+
+            Phase 0/1: Panthor firmware embedded via `EXTRA_FIRMWARE`, `CONFIG_NTSYNC=y`,
+            NPLL raised to 4 GHz in the DTB so the GPU can reach 1 GHz.
 
             Contents:
             - `Image` - arm64 kernel image (drop into the FAT boot partition)
