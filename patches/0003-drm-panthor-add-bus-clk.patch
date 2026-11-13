@@ -59,3 +59,4 @@ diff --git a/drivers/gpu/drm/panthor/panthor_device.h b/drivers/gpu/drm/panthor/
 +
  		/** @core: Core clock. */
  		struct clk *core;
+ 
